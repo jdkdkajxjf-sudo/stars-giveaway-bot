@@ -229,9 +229,9 @@ async function handleMediaMessage(msg: TgMessage) {
 async function sendWelcome(msg: TgMessage, user: { id: string; username: string | null; firstName: string | null; isAdmin: boolean }) {
   const kb: TgInlineKeyboardMarkup = {
     inline_keyboard: [
-      [{ text: '🎁 Создать розыгрыш', callback_data: 'new_giveaway' }],
-      [{ text: '📋 Мои розыгрыши', callback_data: 'my_giveaways' }, { text: '🏆 Мои победы', callback_data: 'my_wins' }],
-      [{ text: '🎟️ Где участвую', callback_data: 'my_tickets' }, { text: '🔥 Активные', callback_data: 'active' }],
+      [{ text: '🎁 Создать розыгрыш', callback_data: 'new' }],
+      [{ text: '📋 Мои розыгрыши', callback_data: 'mygiveaways' }, { text: '🏆 Мои победы', callback_data: 'mywins' }],
+      [{ text: '🎟️ Где участвую', callback_data: 'mytickets' }, { text: '🔥 Активные', callback_data: 'active' }],
     ],
   }
   await send(
@@ -388,10 +388,10 @@ async function handleSessionStep(
       const kb: TgInlineKeyboardMarkup = {
         inline_keyboard: [
           [
-            { text: '1', callback_data: 'winners_1' },
-            { text: '3', callback_data: 'winners_3' },
-            { text: '5', callback_data: 'winners_5' },
-            { text: '10', callback_data: 'winners_10' },
+            { text: '1', callback_data: 'winners:1' },
+            { text: '3', callback_data: 'winners:3' },
+            { text: '5', callback_data: 'winners:5' },
+            { text: '10', callback_data: 'winners:10' },
           ],
         ],
       }
@@ -421,8 +421,8 @@ async function handleSessionStep(
       const kb: TgInlineKeyboardMarkup = {
         inline_keyboard: [
           [
-            { text: '⏰ По времени', callback_data: 'endtype_time' },
-            { text: '🔘 Вручную', callback_data: 'endtype_manual' },
+            { text: '⏰ По времени', callback_data: 'endtype:time' },
+            { text: '🔘 Вручную', callback_data: 'endtype:manual' },
           ],
         ],
       }
@@ -478,6 +478,9 @@ async function handleSessionStep(
         where: { tgId: user.tgId },
         data: { step: 'step6_media', data: JSON.stringify(data) },
       })
+      const kb: TgInlineKeyboardMarkup = {
+        inline_keyboard: [[{ text: '⏭️ Без медиа', callback_data: 'skip' }]],
+      }
       await send(
         msg.chat.id,
         [
@@ -485,8 +488,9 @@ async function handleSessionStep(
           ``,
           `Шаг 6/7: Медиа (опционально)`,
           ``,
-          `Пришли фото или видео для поста, или отправь /skip для пропуска.`,
-        ].join('\n')
+          `Пришли фото или видео для поста, или нажми «⏭️ Без медиа».`,
+        ].join('\n'),
+        kb
       )
       break
     }
@@ -657,6 +661,19 @@ async function publishGiveaway(
       ? `⏰ Завершится: ${new Date(data.endsAt!).toLocaleString('ru-RU')}`
       : `🔘 Завершение вручную`
 
+    // Кнопки управления для владельца
+    const manageKb: TgInlineKeyboardMarkup = {
+      inline_keyboard: [
+        [
+          { text: '🔚 Завершить сейчас', callback_data: `end:${giveaway.id}` },
+          { text: '❌ Отменить', callback_data: `cancel:${giveaway.id}` },
+        ],
+        [
+          { text: '📊 Участники', callback_data: `participants:${giveaway.id}` },
+        ],
+      ],
+    }
+
     await send(
       msg.chat.id,
       [
@@ -667,10 +684,11 @@ async function publishGiveaway(
         `👥 Победителей: ${data.winnersCount}`,
         endInfo,
         ``,
-        `ID розыгрыша: \`${giveaway.id}\``,
+        `ID: \`${giveaway.id}\``,
         ``,
-        `Управлять розыгрышем: /mygiveaways`,
-      ].join('\n')
+        `Управление:`,
+      ].join('\n'),
+      manageKb
     )
   } catch (e) {
     await send(msg.chat.id, `❌ Ошибка публикации: ${e instanceof Error ? e.message : String(e)}`)
@@ -736,20 +754,32 @@ function buildGiveawayText(
 
 async function handleCallbackQuery(cq: TgCallbackQuery) {
   try {
-    // Answer immediately to avoid QUERY_ID_INVALID
-    try {
-      await altgram.answerCallbackQuery({ callback_query_id: cq.id })
-    } catch { /* ignore */ }
-
     const data = cq.data ?? ''
     const from = cq.from
 
-    if (!from) return
+    if (!from) {
+      try { await altgram.answerCallbackQuery({ callback_query_id: cq.id, text: 'Ошибка' }) } catch {}
+      return
+    }
 
-    const [act, arg] = data.split(':')
+    // Парсим callback_data. Формат: "act:arg" или "act_arg" (для обратной совместимости)
+    // Сначала пробуем ":" разделитель
+    let act = data
+    let arg = ''
+    if (data.includes(':')) {
+      [act, arg] = data.split(':')
+    } else if (data.includes('_')) {
+      // Формат "winners_1" → act=winners, arg=1
+      const idx = data.indexOf('_')
+      act = data.slice(0, idx)
+      arg = data.slice(idx + 1)
+    }
 
-    if (act === 'new_giveaway') {
-      // Запускаем мастер создания (через сообщение в ЛС)
+    console.log(`[callback] data="${data}" → act="${act}" arg="${arg}"`)
+
+    // Для быстрых действий (navigation в ЛС) — отвечаем сразу с текстом
+    if (act === 'new_giveaway' || act === 'new') {
+      try { await altgram.answerCallbackQuery({ callback_query_id: cq.id, text: '🎁 Создаём розыгрыш...' }) } catch {}
       const fakeMsg: TgMessage = {
         message_id: 0,
         from: from,
@@ -769,36 +799,55 @@ async function handleCallbackQuery(cq: TgCallbackQuery) {
 
     if (act === 'winners') {
       const n = parseInt(arg)
+      if (isNaN(n) || n < 1) {
+        try { await altgram.answerCallbackQuery({ callback_query_id: cq.id, text: '❌ Ошибка' }) } catch {}
+        return
+      }
+      try { await altgram.answerCallbackQuery({ callback_query_id: cq.id, text: `✅ Победителей: ${n}` }) } catch {}
       await setWinnersCount(cq, n)
       return
     }
 
     if (act === 'endtype') {
+      try { await altgram.answerCallbackQuery({ callback_query_id: cq.id, text: arg === 'time' ? '⏰ По времени' : '🔘 Вручную' }) } catch {}
       await setEndType(cq, arg)
       return
     }
 
-    if (act === 'skip_media') {
+    if (act === 'dur') {
+      const hours = parseInt(arg)
+      if (isNaN(hours) || hours < 1) {
+        try { await altgram.answerCallbackQuery({ callback_query_id: cq.id, text: '❌ Ошибка' }) } catch {}
+        return
+      }
+      try { await altgram.answerCallbackQuery({ callback_query_id: cq.id, text: `✅ ${hours}ч` }) } catch {}
+      await handleDurationButton(cq, hours)
+      return
+    }
+
+    if (act === 'skip' || act === 'skip') {
+      try { await altgram.answerCallbackQuery({ callback_query_id: cq.id, text: '⏭️ Пропускаю медиа' }) } catch {}
       await skipMedia(cq)
       return
     }
 
-    if (act === 'end_now') {
+    if (act === 'end_now' || act === 'end') {
       await endGiveawayNow(cq, arg)
       return
     }
 
-    if (act === 'cancel_ga') {
+    if (act === 'cancel_ga' || act === 'cancel') {
       await cancelGiveaway(cq, arg)
       return
     }
 
-    if (act === 'participants') {
+    if (act === 'participants' || act === 'list') {
       await showParticipants(cq, arg)
       return
     }
 
-    if (act === 'my_giveaways') {
+    if (act === 'my_giveaways' || act === 'mygiveaways') {
+      try { await altgram.answerCallbackQuery({ callback_query_id: cq.id, text: '📋' }) } catch {}
       const fakeMsg: TgMessage = {
         message_id: 0,
         from: from,
@@ -811,7 +860,8 @@ async function handleCallbackQuery(cq: TgCallbackQuery) {
       return
     }
 
-    if (act === 'my_wins') {
+    if (act === 'my_wins' || act === 'mywins') {
+      try { await altgram.answerCallbackQuery({ callback_query_id: cq.id, text: '🏆' }) } catch {}
       const fakeMsg: TgMessage = {
         message_id: 0,
         from: from,
@@ -824,7 +874,8 @@ async function handleCallbackQuery(cq: TgCallbackQuery) {
       return
     }
 
-    if (act === 'my_tickets') {
+    if (act === 'my_tickets' || act === 'mytickets') {
+      try { await altgram.answerCallbackQuery({ callback_query_id: cq.id, text: '🎟️' }) } catch {}
       const fakeMsg: TgMessage = {
         message_id: 0,
         from: from,
@@ -838,6 +889,7 @@ async function handleCallbackQuery(cq: TgCallbackQuery) {
     }
 
     if (act === 'active') {
+      try { await altgram.answerCallbackQuery({ callback_query_id: cq.id, text: '🔥' }) } catch {}
       const fakeMsg: TgMessage = {
         message_id: 0,
         from: from,
@@ -849,8 +901,12 @@ async function handleCallbackQuery(cq: TgCallbackQuery) {
       await handleActiveGiveaways(fakeMsg, user)
       return
     }
+
+    // Неизвестный callback — отвечаем чтобы не зависал
+    try { await altgram.answerCallbackQuery({ callback_query_id: cq.id, text: 'Ок' }) } catch {}
   } catch (e) {
     console.error('[callback] error:', e)
+    try { await altgram.answerCallbackQuery({ callback_query_id: cq.id, text: '❌ Ошибка' }) } catch {}
   }
 }
 
@@ -1012,8 +1068,8 @@ async function setWinnersCount(cq: TgCallbackQuery, n: number) {
   const kb: TgInlineKeyboardMarkup = {
     inline_keyboard: [
       [
-        { text: '⏰ По времени', callback_data: 'endtype_time' },
-        { text: '🔘 Вручную', callback_data: 'endtype_manual' },
+        { text: '⏰ По времени', callback_data: 'endtype:time' },
+        { text: '🔘 Вручную', callback_data: 'endtype:manual' },
       ],
     ],
   }
@@ -1047,6 +1103,9 @@ async function setEndType(cq: TgCallbackQuery, endType: string) {
       where: { tgId: user.tgId },
       data: { step: 'step6_media', data: JSON.stringify(data) },
     })
+    const kb: TgInlineKeyboardMarkup = {
+      inline_keyboard: [[{ text: '⏭️ Без медиа', callback_data: 'skip' }]],
+    }
     await send(
       cq.from.id,
       [
@@ -1054,9 +1113,11 @@ async function setEndType(cq: TgCallbackQuery, endType: string) {
         ``,
         `Шаг 6/7: Медиа (опционально)`,
         ``,
-        `Пришли фото или видео для поста, или отправь /skip для пропуска.`,
-      ].join('\n')
+        `Пришли фото или видео для поста, или нажми «⏭️ Без медиа».`,
+      ].join('\n'),
+      kb
     )
+    return
   } else {
     // time
     data.endType = 'time'
@@ -1067,13 +1128,13 @@ async function setEndType(cq: TgCallbackQuery, endType: string) {
     const kb: TgInlineKeyboardMarkup = {
       inline_keyboard: [
         [
-          { text: '1 час', callback_data: 'dur_1' },
-          { text: '6 часов', callback_data: 'dur_6' },
-          { text: '24 часа', callback_data: 'dur_24' },
+          { text: '1 час', callback_data: 'dur:1' },
+          { text: '6 часов', callback_data: 'dur:6' },
+          { text: '24 часа', callback_data: 'dur:24' },
         ],
         [
-          { text: '3 дня', callback_data: 'dur_72' },
-          { text: '7 дней', callback_data: 'dur_168' },
+          { text: '3 дня', callback_data: 'dur:72' },
+          { text: '7 дней', callback_data: 'dur:168' },
         ],
       ],
     }
@@ -1091,7 +1152,7 @@ async function setEndType(cq: TgCallbackQuery, endType: string) {
   }
 }
 
-// Helper: handle duration buttons (dur_1, dur_6, ...)
+// Helper: handle duration buttons (dur:1, dur:6, ...)
 async function handleDurationButton(cq: TgCallbackQuery, hours: number) {
   const user = await upsertUser(cq.from)
   const session = await db.session.findUnique({ where: { tgId: user.tgId } })
