@@ -80,6 +80,16 @@ export async function handleUpdate(update: TgUpdate): Promise<void> {
 
     if (update.edited_message) return
 
+    // Forward-сообщение (пересылка поста из канала) — обрабатываем отдельно
+    // ВАЖНО: AltGram getChat не работает с @username, нужно получать chat_id из forward
+    if (msg.forward_from_chat || msg.forward_origin || msg.forward_from) {
+      const handled = await handleForwardMessage(msg)
+      if (handled) {
+        // Уже обработали — не вызываем остальные обработчики
+        return
+      }
+    }
+
     if (msg.text) {
       await handleTextMessage(msg)
     } else if (msg.photo || msg.video || msg.animation || msg.document) {
@@ -167,6 +177,64 @@ async function handleTextMessage(msg: TgMessage) {
         await send(msg.chat.id, '🤔 Неизвестная команда. /help — список команд.')
       }
   }
+}
+
+async function handleForwardMessage(msg: TgMessage): Promise<boolean> {
+  const from = msg.from
+  if (!from || from.is_bot || !isPrivate(msg)) return false
+
+  const user = await upsertUser(from)
+  const session = await db.session.findUnique({ where: { tgId: user.tgId } })
+  if (!session) {
+    // Не в сессии — пересылка игнорируется
+    return false
+  }
+
+  console.log(`[forward] user=${user.tgId} step=${session.step} forward_from_chat=${!!msg.forward_from_chat} forward_origin=${!!msg.forward_origin}`)
+
+  // Шаг 7 — пересылка поста из канала
+  if (session.step === 'step7_channel') {
+    // Извлекаем chat_id из forward-сообщения
+    let channelId: number | null = null
+    let channelUsername: string | null = null
+    let channelTitle: string | null = null
+
+    if (msg.forward_from_chat) {
+      channelId = msg.forward_from_chat.id
+      channelUsername = msg.forward_from_chat.username ?? null
+      channelTitle = msg.forward_from_chat.title ?? null
+    }
+    if (!channelId && msg.forward_origin?.chat) {
+      channelId = msg.forward_origin.chat.id
+      channelUsername = msg.forward_origin.chat.username ?? null
+      channelTitle = msg.forward_origin.chat.title ?? null
+    }
+
+    console.log(`[forward] extracted: channelId=${channelId} username=${channelUsername} title=${channelTitle}`)
+
+    if (!channelId) {
+      const kb: TgInlineKeyboardMarkup = {
+        inline_keyboard: [[{ text: '❌ Отменить', callback_data: 'cancel_session' }]],
+      }
+      await send(msg.chat.id, '⚠️ Не удалось получить chat_id канала. Возможно это пересылка из приватного чата.\n\nПерешли пост из **публичного** канала, где ты владелец.', kb)
+      return true
+    }
+
+    // Вызываем handleSessionStep с forward-сообщением (msg вместо текста)
+    await handleSessionStep(msg, user, session, '')
+    return true
+  }
+
+  // Шаг 6 — медиа из пересланного поста тоже может подойти для шага 6
+  if (session.step === 'step6_media') {
+    // Проверим есть ли фото/видео
+    if (msg.photo || msg.video || msg.animation) {
+      await handleMediaMessage(msg)
+      return true
+    }
+  }
+
+  return false
 }
 
 async function handleMediaMessage(msg: TgMessage) {
