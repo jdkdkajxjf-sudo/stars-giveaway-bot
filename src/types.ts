@@ -32,6 +32,15 @@ export interface TgMessage {
   animation?: { file_id: string; file_unique_id: string; width: number; height: number; duration: number; file_size?: number }
   sticker?: { file_id: string; file_unique_id: string; width: number; height: number; is_animated: boolean; is_video: boolean; emoji?: string }
   document?: { file_id: string; file_unique_id: string; file_name?: string; mime_type?: string; file_size?: number }
+  forward_from?: TgUser
+  forward_from_chat?: TgChat
+  forward_origin?: {
+    type: string  // "user", "chat", "channel", "hidden"
+    sender_user?: TgUser
+    chat?: TgChat
+    date?: number
+  }
+  sender_chat?: TgChat
 }
 
 export interface TgMessageEntity {
