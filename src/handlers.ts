@@ -293,7 +293,7 @@ async function handleMediaMessage(msg: TgMessage) {
     },
   })
 
-  await send(msg.chat.id, `✅ Медиа добавлено (${mediaType}).\n\nШаг 7/7: Пришли @username канала\n\n⚠️ Ты должен быть **владельцем** канала, а бот должен быть админом канала.`)
+  await send(msg.chat.id, `✅ Медиа добавлено (${mediaType}).\n\nШаг 7/7: **Перешли** любой пост из канала\n\n⚠️ Ты должен быть **владельцем** канала, а бот должен быть админом канала.`)
 }
 
 /* ------------------------------------------------------------------ */
@@ -341,10 +341,13 @@ async function sendHelp(msg: TgMessage, user: { isAdmin: boolean }) {
     `• /help — эта справка`,
     ``,
     `**Как создать розыгрыш:**`,
-    `1. Ты должен быть **владельцем** Telegram-канала`,
-    `2. Добавь бота в **администраторы** канала`,
-    `3. Дай боту право **публиковать посты**`,
-    `4. Отправь /newgiveaway и следуй шагам`,
+    `1. Добавь @giveawaysbot в **администраторы** своего канала`,
+    `2. Дай боту право **публиковать посты**`,
+    `3. Отправь /newgiveaway боту в ЛС`,
+    `4. На шаге 7 — **перешли любой пост** из твоего канала`,
+    `5. Бот проверит что ты владелец и создаст розыгрыш`,
+    ``,
+    `⚠️ Бот не может найти канал по @username — только через пересылку поста.`,
     ``,
     `**Как участвовать:**`,
     `Жми кнопку "🎉 Участвовать" под постом розыгрыша`,
@@ -659,56 +662,110 @@ async function handleSessionStep(
     }
 
     case 'step7_channel': {
-      // Шаг 7 — ввод @username канала
+      // Шаг 7 — юзер должен ПЕРЕСЛАТЬ любой пост из канала
+      // AltGram getChat/getChatMember не работают с @username — только с числовым chat_id
+      // Поэтому достаём chat_id из forward-сообщения
       const cancelKb: TgInlineKeyboardMarkup = {
         inline_keyboard: [[{ text: '❌ Отменить', callback_data: 'cancelsess' }]],
       }
-      
-      const channelArg = input.trim()
-      if (!channelArg) {
-        await send(msg.chat.id, '⚠️ Пришли @username канала.\nНапример: `@mychannel`', cancelKb)
-        return
-      }
-      
-      const channelUsername = channelArg.replace(/^@/, '').toLowerCase()
-      if (channelUsername.length < 3) {
-        await send(msg.chat.id, '⚠️ Слишком короткое имя. Пришли @username канала.', cancelKb)
+
+      // Если юзер написал текст вместо пересылки
+      if (input && !msg.forward_from_chat && !msg.forward_origin) {
+        await send(
+          msg.chat.id,
+          [
+            `⚠️ Нужно **переслать** любой пост из твоего канала.`,
+            ``,
+            `Зачем это нужно:`,
+            `AltGram API не умеет искать каналы по @username.`,
+            `Поэтому бот достаёт числовой chat_id из пересланного поста.`,
+            ``,
+            `**Как переслать:**`,
+            `1. Открой свой канал`,
+            `2. Найди любой пост (текст, фото, видео — любой)`,
+            `3. Long-tap на пост → «Переслать»`,
+            `4. Выбери giveaway-бота`,
+            ``,
+            `Бот проверит что ты владелец и создаст розыгрыш.`,
+          ].join('\n'),
+          cancelKb
+        )
         return
       }
 
-      data.channelUsername = channelUsername
+      // Достаём chat_id и username канала из forward-сообщения
+      let channelId: number | null = null
+      let channelUsername: string | null = null
+      let channelTitle: string | null = null
+
+      // Сначала пробуем forward_from_chat (старый формат AltGram)
+      if (msg.forward_from_chat) {
+        channelId = msg.forward_from_chat.id
+        channelUsername = msg.forward_from_chat.username ?? null
+        channelTitle = msg.forward_from_chat.title ?? null
+      }
+      // Потом forward_origin (новый формат Telegram)
+      if (!channelId && msg.forward_origin) {
+        if (msg.forward_origin.chat) {
+          channelId = msg.forward_origin.chat.id
+          channelUsername = msg.forward_origin.chat.username ?? null
+          channelTitle = msg.forward_origin.chat.title ?? null
+        }
+      }
+
+      console.log(`[step7] forward: channelId=${channelId} username=${channelUsername} title=${channelTitle}`)
+
+      if (!channelId) {
+        await send(
+          msg.chat.id,
+          [
+            `⚠️ Не удалось получить chat_id канала.`,
+            ``,
+            `Это может быть если:`,
+            `• Ты переслал сообщение из **приватного** чата (не из канала)`,
+            `• AltGram скрыл данные отправителя`,
+            ``,
+            `Перешли пост из **публичного** канала, где ты владелец.`,
+          ].join('\n'),
+          cancelKb
+        )
+        return
+      }
+
+      const displayTitle = channelTitle || (channelUsername ? `@${channelUsername}` : `id:${channelId}`)
+
       await db.session.update({
         where: { tgId: user.tgId },
         data: { step: 'publishing', data: JSON.stringify(data) },
       })
 
-      await send(msg.chat.id, `🔍 Проверяю что ты владелец @${channelUsername}...\n\n⏳ Это может занять несколько секунд.`)
+      await send(msg.chat.id, `🔍 Проверяю что ты владелец канала **${displayTitle}**...`)
 
-      // Проверяем через getChatMember с @username (бот должен быть админом канала!)
+      // Проверяем через getChatMember с ЧИСЛОВЫМ chat_id (это работает!)
       try {
         const memberRes = await altgram.getChatMember({
-          chat_id: `@${channelUsername}`,
+          chat_id: channelId,
           user_id: Number(user.tgId),
         })
-        console.log(`[channel] getChatMember for @${channelUsername}:`, JSON.stringify(memberRes).slice(0, 300))
+        console.log(`[channel] getChatMember for ${displayTitle} (id=${channelId}):`, JSON.stringify(memberRes).slice(0, 300))
 
         if (!memberRes.ok || !memberRes.result) {
           await send(
             msg.chat.id,
             [
-              `❌ Не удалось проверить твой статус в @${channelUsername}.`,
+              `❌ Не удалось проверить твой статус в **${displayTitle}**.`,
               ``,
               `**Возможные причины:**`,
-              `• Бот НЕ добавлен в админы @${channelUsername}`,
-              `• Канал приватный или удалён`,
+              `• Бот НЕ добавлен в админы канала`,
+              `• Канал приватный`,
               ``,
               `**Что делать:**`,
-              `1. Открой @${channelUsername}`,
+              `1. Открой канал **${displayTitle}**`,
               `2. Управление → Администраторы`,
-              `3. Добавь бота с правом публикации постов`,
+              `3. Добавь @giveawaysbot с правом публикации постов`,
               `4. Попробуй снова: /newgiveaway`,
               ``,
-              `Ошибка: ${memberRes.description || 'неизвестно'}`,
+              `Ошибка AltGram: ${memberRes.description || 'неизвестно'}`,
             ].join('\n'),
             cancelKb
           )
@@ -721,7 +778,7 @@ async function handleSessionStep(
           await send(
             msg.chat.id,
             [
-              `❌ Ты не владелец @${channelUsername}.`,
+              `❌ Ты не владелец канала **${displayTitle}**.`,
               ``,
               `Твой статус: **${status}**`,
               `Только владелец (creator) или админ канала может создавать розыгрыши.`,
@@ -735,7 +792,7 @@ async function handleSessionStep(
         if (status === 'administrator' && memberRes.result.can_post_messages === false) {
           await send(
             msg.chat.id,
-            `❌ Ты админ @${channelUsername}, но без права публикации постов. Попроси владельца дать тебе это право.`,
+            `❌ Ты админ **${displayTitle}**, но без права публикации постов. Попроси владельца дать тебе это право.`,
             cancelKb
           )
           await db.session.deleteMany({ where: { tgId: user.tgId } })
@@ -743,7 +800,19 @@ async function handleSessionStep(
         }
 
         // ОК — можно создавать!
-        await send(msg.chat.id, `✅ Ты ${status === 'creator' ? 'владелец' : 'админ'} @${channelUsername}. Создаю розыгрыш...`)
+        // Если у канала есть @username, сохраним его для постинга
+        if (channelUsername) {
+          data.channelUsername = channelUsername.toLowerCase()
+          data.channelChatId = channelId
+          data.channelTitle = channelTitle
+          await send(msg.chat.id, `✅ Ты ${status === 'creator' ? 'владелец' : 'админ'} **${displayTitle}** (@${channelUsername}). Создаю розыгрыш...`)
+        } else {
+          // Канал без @username — можно публиковать через числовой chat_id
+          data.channelUsername = `id:${channelId}`
+          data.channelChatId = channelId
+          data.channelTitle = channelTitle
+          await send(msg.chat.id, `✅ Ты ${status === 'creator' ? 'владелец' : 'админ'} **${displayTitle}**. Создаю розыгрыш...`)
+        }
       } catch (e) {
         await send(msg.chat.id, `❌ Ошибка проверки канала: ${e instanceof Error ? e.message : String(e)}`, cancelKb)
         await db.session.deleteMany({ where: { tgId: user.tgId } })
@@ -1651,7 +1720,7 @@ async function skipMedia(cq: TgCallbackQuery) {
   })
   await send(
     cq.from.id,
-    `✅ Без медиа\n\nШаг 7/7: Пришли @username канала\n\n⚠️ Ты должен быть **владельцем** канала, а бот должен быть админом канала.`
+    `✅ Без медиа\n\nШаг 7/7: **Перешли** любой пост из канала\n\n⚠️ Ты должен быть **владельцем** канала, а бот должен быть админом канала.`
   )
 }
 
