@@ -214,7 +214,7 @@ async function handleForwardMessage(msg: TgMessage): Promise<boolean> {
 
     if (!channelId) {
       const kb: TgInlineKeyboardMarkup = {
-        inline_keyboard: [[{ text: '❌ Отменить', callback_data: 'cancel_session' }]],
+        inline_keyboard: [[{ text: '❌ Отменить', callback_data: 'cancelsess' }]],
       }
       await send(msg.chat.id, '⚠️ Не удалось получить chat_id канала. Возможно это пересылка из приватного чата.\n\nПерешли пост из **публичного** канала, где ты владелец.', kb)
       return true
@@ -378,7 +378,7 @@ async function startGiveawayCreation(msg: TgMessage, user: { id: string; tgId: s
   })
 
   const kb: TgInlineKeyboardMarkup = {
-    inline_keyboard: [[{ text: '❌ Отменить', callback_data: 'cancel_session' }]],
+    inline_keyboard: [[{ text: '❌ Отменить', callback_data: 'cancelsess' }]],
   }
 
   await send(
@@ -403,7 +403,7 @@ async function handleSessionStep(
 ) {
   const data = JSON.parse(session.data)
   const cancelKb: TgInlineKeyboardMarkup = {
-    inline_keyboard: [[{ text: '❌ Отменить', callback_data: 'cancel_session' }]],
+    inline_keyboard: [[{ text: '❌ Отменить', callback_data: 'cancelsess' }]],
   }
 
   switch (session.step) {
@@ -475,7 +475,7 @@ async function handleSessionStep(
             { text: '✅ Да, добавить каналы', callback_data: 'subs:yes' },
             { text: '⏭️ Без подписок', callback_data: 'subs:no' },
           ],
-          [{ text: '❌ Отменить', callback_data: 'cancel_session' }],
+          [{ text: '❌ Отменить', callback_data: 'cancelsess' }],
         ],
       }
       await send(
@@ -527,7 +527,7 @@ async function handleSessionStep(
               { text: '5', callback_data: 'winners:5' },
               { text: '10', callback_data: 'winners:10' },
             ],
-            [{ text: '❌ Отменить', callback_data: 'cancel_session' }],
+            [{ text: '❌ Отменить', callback_data: 'cancelsess' }],
           ],
         }
       )
@@ -554,7 +554,7 @@ async function handleSessionStep(
           [
             { text: '👥 По кол-ву участников', callback_data: 'endtype:participants' },
           ],
-          [{ text: '❌ Отменить', callback_data: 'cancel_session' }],
+          [{ text: '❌ Отменить', callback_data: 'cancelsess' }],
         ],
       }
       await send(
@@ -666,7 +666,7 @@ async function handleSessionStep(
       // Если пользователь написал текст вместо пересылки
       if (input && !msg.forward_from_chat && !msg.forward_origin) {
         const kb: TgInlineKeyboardMarkup = {
-          inline_keyboard: [[{ text: '❌ Отменить', callback_data: 'cancel_session' }]],
+          inline_keyboard: [[{ text: '❌ Отменить', callback_data: 'cancelsess' }]],
         }
         await send(
           msg.chat.id,
@@ -706,7 +706,7 @@ async function handleSessionStep(
 
       if (!channelId) {
         const kb: TgInlineKeyboardMarkup = {
-          inline_keyboard: [[{ text: '❌ Отменить', callback_data: 'cancel_session' }]],
+          inline_keyboard: [[{ text: '❌ Отменить', callback_data: 'cancelsess' }]],
         }
         await send(msg.chat.id, '⚠️ Не удалось получить chat_id канала. Перешли пост ещё раз.', kb)
         return
@@ -1080,11 +1080,22 @@ async function handleCallbackQuery(cq: TgCallbackQuery) {
       return
     }
 
-    if (act === 'cancel_session') {
+    if (act === 'cancelsess') {
       try { await altgram.answerCallbackQuery({ callback_query_id: cq.id, text: '❌ Отменено' }) } catch {}
       const user = await upsertUser(cq.from)
       await db.session.deleteMany({ where: { tgId: user.tgId } })
       await send(cq.from.id, '❌ Создание розыгрыша отменено. Начни заново: /newgiveaway')
+      return
+    }
+
+    // cancel:GIVEAWAY_ID — отмена конкретного розыгрыша (из поста управления)
+    if (act === 'cancel') {
+      await cancelGiveaway(cq, arg)
+      return
+    }
+
+    if (act === 'cancel_ga' || act === 'cancelga') {
+      await cancelGiveaway(cq, arg)
       return
     }
 
@@ -1118,11 +1129,6 @@ async function handleCallbackQuery(cq: TgCallbackQuery) {
 
     if (act === 'end_now' || act === 'end') {
       await endGiveawayNow(cq, arg)
-      return
-    }
-
-    if (act === 'cancel_ga' || act === 'cancel') {
-      await cancelGiveaway(cq, arg)
       return
     }
 
@@ -1494,7 +1500,7 @@ async function setEndType(cq: TgCallbackQuery, endType: string) {
           { text: '500', callback_data: 'maxpart:500' },
           { text: '1000', callback_data: 'maxpart:1000' },
         ],
-        [{ text: '❌ Отменить', callback_data: 'cancel_session' }],
+        [{ text: '❌ Отменить', callback_data: 'cancelsess' }],
       ],
     }
     await send(
@@ -1527,7 +1533,7 @@ async function setEndType(cq: TgCallbackQuery, endType: string) {
           { text: '3 дня', callback_data: 'dur:72' },
           { text: '7 дней', callback_data: 'dur:168' },
         ],
-        [{ text: '❌ Отменить', callback_data: 'cancel_session' }],
+        [{ text: '❌ Отменить', callback_data: 'cancelsess' }],
       ],
     }
     await send(
@@ -1576,7 +1582,7 @@ async function handleSubsChoice(cq: TgCallbackQuery, addSubs: boolean) {
             { text: '5', callback_data: 'winners:5' },
             { text: '10', callback_data: 'winners:10' },
           ],
-          [{ text: '❌ Отменить', callback_data: 'cancel_session' }],
+          [{ text: '❌ Отменить', callback_data: 'cancelsess' }],
         ],
       }
     )
@@ -1599,7 +1605,7 @@ async function handleSubsChoice(cq: TgCallbackQuery, addSubs: boolean) {
       `⚠️ Бот должен быть админом каждого канала для проверки подписки.`,
     ].join('\n'),
     {
-      inline_keyboard: [[{ text: '❌ Отменить', callback_data: 'cancel_session' }]],
+      inline_keyboard: [[{ text: '❌ Отменить', callback_data: 'cancelsess' }]],
     }
   )
 }
