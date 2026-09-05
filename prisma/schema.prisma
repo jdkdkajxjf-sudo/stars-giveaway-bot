@@ -38,8 +38,9 @@ model Giveaway {
   description     String
   requirements    String
   winnersCount    Int
-  endType         String
+  endType         String   // "time" | "manual" | "participants"
   endsAt          DateTime?
+  maxParticipants Int?     // для endType='participants'
   mediaType       String?
   mediaFileId     String?
   channelUsername String
@@ -48,6 +49,7 @@ model Giveaway {
   totalTickets    Int      @default(0)
   status          String   @default("active")
   ownerTgId       String
+  requiredChannels String? // JSON array of usernames: ["channel1","channel2"]
   createdAt       DateTime @default(now())
   endedAt         DateTime?
 

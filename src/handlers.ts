@@ -303,6 +303,10 @@ async function startGiveawayCreation(msg: TgMessage, user: { id: string; tgId: s
     },
   })
 
+  const kb: TgInlineKeyboardMarkup = {
+    inline_keyboard: [[{ text: '❌ Отменить', callback_data: 'cancel_session' }]],
+  }
+
   await send(
     msg.chat.id,
     [
@@ -311,10 +315,9 @@ async function startGiveawayCreation(msg: TgMessage, user: { id: string; tgId: s
       `Шаг 1/7: Что разыгрываем?`,
       ``,
       `Отправь **краткое название** приза.`,
-      `Например: «iPhone 15 Pro», «1000 рублей», «Ключ от Steam игры»`,
-      ``,
-      `Чтобы отменить — отправь /cancel`,
-    ].join('\n')
+      `Например: «iPhone 15 Pro», «1000 рублей», «Ключ от Steam»`,
+    ].join('\n'),
+    kb
   )
 }
 
@@ -325,12 +328,15 @@ async function handleSessionStep(
   input: string
 ) {
   const data = JSON.parse(session.data)
+  const cancelKb: TgInlineKeyboardMarkup = {
+    inline_keyboard: [[{ text: '❌ Отменить', callback_data: 'cancel_session' }]],
+  }
 
   switch (session.step) {
     case 'step1_title': {
       const title = input.trim().slice(0, 100)
       if (title.length < 2) {
-        await send(msg.chat.id, '⚠️ Название слишком короткое. Попробуй ещё раз.')
+        await send(msg.chat.id, '⚠️ Название слишком короткое. Попробуй ещё раз.', cancelKb)
         return
       }
       data.title = title
@@ -347,7 +353,8 @@ async function handleSessionStep(
           ``,
           `Опиши приз подробнее: состояние, доставку, и т.д.`,
           `Например: «Новый, в упаковке. Доставка по РФ бесплатно.»`,
-        ].join('\n')
+        ].join('\n'),
+        cancelKb
       )
       break
     }
@@ -355,7 +362,7 @@ async function handleSessionStep(
     case 'step2_desc': {
       const description = input.trim().slice(0, 1000)
       if (description.length < 5) {
-        await send(msg.chat.id, '⚠️ Описание слишком короткое. Попробуй ещё раз.')
+        await send(msg.chat.id, '⚠️ Описание слишком короткое. Попробуй ещё раз.', cancelKb)
         return
       }
       data.description = description
@@ -371,9 +378,12 @@ async function handleSessionStep(
           `Шаг 3/7: Условия для участников`,
           ``,
           `Что должны сделать участники?`,
+          ``,
+          `Просто напиши текст условий.`,
           `Например: «Подписка на @channel + репост»`,
           `Или «Просто нажми кнопку»`,
-        ].join('\n')
+        ].join('\n'),
+        cancelKb
       )
       break
     }
@@ -383,16 +393,15 @@ async function handleSessionStep(
       data.requirements = requirements
       await db.session.update({
         where: { tgId: user.tgId },
-        data: { step: 'step4_winners', data: JSON.stringify(data) },
+        data: { step: 'step3_subs', data: JSON.stringify(data) },
       })
       const kb: TgInlineKeyboardMarkup = {
         inline_keyboard: [
           [
-            { text: '1', callback_data: 'winners:1' },
-            { text: '3', callback_data: 'winners:3' },
-            { text: '5', callback_data: 'winners:5' },
-            { text: '10', callback_data: 'winners:10' },
+            { text: '✅ Да, добавить каналы', callback_data: 'subs:yes' },
+            { text: '⏭️ Без подписок', callback_data: 'subs:no' },
           ],
+          [{ text: '❌ Отменить', callback_data: 'cancel_session' }],
         ],
       }
       await send(
@@ -400,9 +409,53 @@ async function handleSessionStep(
         [
           `✅ Условия сохранены`,
           ``,
-          `Шаг 4/7: Сколько победителей?`,
+          `Шаг 3.5: Подписки на каналы`,
+          ``,
+          `Хочешь ли ты требовать подписку на каналы?`,
+          ``,
+          `Если **да** — напиши @username каналов через пробел:`,
+          `Например: \`@channel1 @channel2\``,
+          ``,
+          `Бот будет проверять подписку каждого участника.`,
         ].join('\n'),
         kb
+      )
+      break
+    }
+
+    case 'step3_subs_input': {
+      // Юзер ввёл @username каналов через пробел
+      const channels = input.trim().split(/\s+/)
+        .map(c => c.replace(/^@/, '').toLowerCase())
+        .filter(c => c.length >= 3)
+      if (channels.length === 0) {
+        await send(msg.chat.id, '⚠️ Не понял. Напиши @username каналов через пробел.\nНапример: `@channel1 @channel2`', cancelKb)
+        return
+      }
+      data.requiredChannels = channels
+      await db.session.update({
+        where: { tgId: user.tgId },
+        data: { step: 'step4_winners', data: JSON.stringify(data) },
+      })
+      await send(
+        msg.chat.id,
+        [
+          `✅ Подписки добавлены:`,
+          ...channels.map(c => `• @${c}`),
+          ``,
+          `Шаг 4/7: Сколько победителей?`,
+        ].join('\n'),
+        {
+          inline_keyboard: [
+            [
+              { text: '1', callback_data: 'winners:1' },
+              { text: '3', callback_data: 'winners:3' },
+              { text: '5', callback_data: 'winners:5' },
+              { text: '10', callback_data: 'winners:10' },
+            ],
+            [{ text: '❌ Отменить', callback_data: 'cancel_session' }],
+          ],
+        }
       )
       break
     }
@@ -410,7 +463,7 @@ async function handleSessionStep(
     case 'step4_winners': {
       const n = parseInt(input.trim())
       if (isNaN(n) || n < 1 || n > 100) {
-        await send(msg.chat.id, '⚠️ Введи число от 1 до 100.')
+        await send(msg.chat.id, '⚠️ Введи число от 1 до 100.', cancelKb)
         return
       }
       data.winnersCount = n
@@ -424,6 +477,10 @@ async function handleSessionStep(
             { text: '⏰ По времени', callback_data: 'endtype:time' },
             { text: '🔘 Вручную', callback_data: 'endtype:manual' },
           ],
+          [
+            { text: '👥 По кол-ву участников', callback_data: 'endtype:participants' },
+          ],
+          [{ text: '❌ Отменить', callback_data: 'cancel_session' }],
         ],
       }
       await send(
@@ -433,8 +490,9 @@ async function handleSessionStep(
           ``,
           `Шаг 5/7: Как завершить розыгрыш?`,
           ``,
-          `⏰ **По времени** — завершится автоматически`,
-          `🔘 **Вручную** — ты нажмёшь кнопку «Завершить»`,
+          `⏰ **По времени** — завершится сам`,
+          `🔘 **Вручную** — по кнопке владельца`,
+          `👥 **По участникам** — после N участников`,
         ].join('\n'),
         kb
       )
@@ -469,7 +527,7 @@ async function handleSessionStep(
         }
       }
       if (!endsAt) {
-        await send(msg.chat.id, '⚠️ Не понял формат. Примеры: 1h, 24h, 7d, 30min. Или просто число часов.')
+        await send(msg.chat.id, '⚠️ Не понял формат. Примеры: 1h, 24h, 7d, 30min. Или просто число часов.', cancelKb)
         return
       }
       data.endType = 'time'
@@ -495,12 +553,43 @@ async function handleSessionStep(
       break
     }
 
+    case 'step5_endtype_participants': {
+      // ожидаем число участников для завершения
+      const n = parseInt(input.trim())
+      if (isNaN(n) || n < 1 || n > 100000) {
+        await send(msg.chat.id, '⚠️ Введи число от 1 до 100000.', cancelKb)
+        return
+      }
+      data.endType = 'participants'
+      data.maxParticipants = n
+      data.endsAt = null
+      await db.session.update({
+        where: { tgId: user.tgId },
+        data: { step: 'step6_media', data: JSON.stringify(data) },
+      })
+      const kb: TgInlineKeyboardMarkup = {
+        inline_keyboard: [[{ text: '⏭️ Без медиа', callback_data: 'skip' }]],
+      }
+      await send(
+        msg.chat.id,
+        [
+          `✅ Завершится после ${n} участников`,
+          ``,
+          `Шаг 6/7: Медиа (опционально)`,
+          ``,
+          `Пришли фото или видео для поста, или нажми «⏭️ Без медиа».`,
+        ].join('\n'),
+        kb
+      )
+      break
+    }
+
     case 'step7_channel': {
       // Финальный шаг — канал
       const channelArg = input.trim()
       const channelUsername = channelArg.replace(/^@/, '').toLowerCase()
       if (!channelUsername || channelUsername.length < 3) {
-        await send(msg.chat.id, '⚠️ Пришли @username канала. Например: @mychannel')
+        await send(msg.chat.id, '⚠️ Пришли @username канала. Например: @mychannel', cancelKb)
         return
       }
 
@@ -514,17 +603,14 @@ async function handleSessionStep(
 
       // Проверяем владельца
       try {
-        // Сначала получим chat_id канала
         const chatRes = await altgram.getChat({ chat_id: `@${channelUsername}` })
         if (!chatRes.ok || !chatRes.result) {
           await send(msg.chat.id, `❌ Канал @${channelUsername} не найден. Возможно бот не админ канала.`)
-          // Сбрасываем сессию
           await db.session.deleteMany({ where: { tgId: user.tgId } })
           return
         }
         const channelId = chatRes.result.id
 
-        // Проверяем статус юзера в канале
         const memberRes = await altgram.getChatMember({
           chat_id: channelId,
           user_id: Number(user.tgId),
@@ -571,24 +657,35 @@ async function publishGiveaway(
     winnersCount: number
     endType: string
     endsAt?: string
+    maxParticipants?: number
     mediaType?: string
     mediaFileId?: string
     channelUsername: string
+    requiredChannels?: string[]
   }
 ) {
+  // Если есть requiredChannels, добавим их в requirements текстом
+  let fullRequirements = data.requirements
+  if (data.requiredChannels && data.requiredChannels.length > 0) {
+    const subsLine = data.requiredChannels.map(c => `• Подписка на @${c}`).join('\n')
+    fullRequirements = `${data.requirements}\n\n${subsLine}`
+  }
+
   // Создаём запись в БД
   const giveaway = await db.giveaway.create({
     data: {
       title: data.title,
       description: data.description,
-      requirements: data.requirements,
+      requirements: fullRequirements,
       winnersCount: data.winnersCount,
       endType: data.endType,
       endsAt: data.endsAt ? new Date(data.endsAt) : null,
+      maxParticipants: data.maxParticipants ?? null,
       mediaType: data.mediaType ?? null,
       mediaFileId: data.mediaFileId ?? null,
       channelUsername: data.channelUsername,
       ownerTgId: user.tgId,
+      requiredChannels: data.requiredChannels ? JSON.stringify(data.requiredChannels) : null,
     },
   })
 
@@ -659,6 +756,8 @@ async function publishGiveaway(
 
     const endInfo = data.endType === 'time' 
       ? `⏰ Завершится: ${new Date(data.endsAt!).toLocaleString('ru-RU')}`
+      : data.endType === 'participants'
+      ? `👥 Завершится после ${data.maxParticipants} участников`
       : `🔘 Завершение вручную`
 
     // Кнопки управления для владельца
@@ -705,6 +804,7 @@ function buildGiveawayText(
     winnersCount: number
     endType: string
     endsAt: Date | null
+    maxParticipants: number | null
     channelUsername: string
   },
   participantsCount: number,
@@ -728,9 +828,15 @@ function buildGiveawayText(
     ].join('\n')
   }
 
-  const endInfo = giveaway.endType === 'time' && giveaway.endsAt
-    ? `⏰ Завершится: ${giveaway.endsAt.toLocaleString('ru-RU')}`
-    : `🔘 Завершение: вручную (по решению владельца)`
+  let endInfo: string
+  if (giveaway.endType === 'time' && giveaway.endsAt) {
+    endInfo = `⏰ Завершится: ${giveaway.endsAt.toLocaleString('ru-RU')}`
+  } else if (giveaway.endType === 'participants' && giveaway.maxParticipants) {
+    const remaining = Math.max(0, giveaway.maxParticipants - participantsCount)
+    endInfo = `👥 Завершится: после ${giveaway.maxParticipants} участников (осталось ${remaining})`
+  } else {
+    endInfo = `🔘 Завершение: вручную (по решению владельца)`
+  }
 
   return [
     `🎁 РОЗЫГРЫШ: ${giveaway.title}`,
@@ -809,8 +915,23 @@ async function handleCallbackQuery(cq: TgCallbackQuery) {
     }
 
     if (act === 'endtype') {
-      try { await altgram.answerCallbackQuery({ callback_query_id: cq.id, text: arg === 'time' ? '⏰ По времени' : '🔘 Вручную' }) } catch {}
+      const text = arg === 'time' ? '⏰ По времени' : arg === 'manual' ? '🔘 Вручную' : '👥 По участникам'
+      try { await altgram.answerCallbackQuery({ callback_query_id: cq.id, text }) } catch {}
       await setEndType(cq, arg)
+      return
+    }
+
+    if (act === 'subs') {
+      try { await altgram.answerCallbackQuery({ callback_query_id: cq.id, text: arg === 'yes' ? '✅ Да' : '⏭️ Без подписок' }) } catch {}
+      await handleSubsChoice(cq, arg === 'yes')
+      return
+    }
+
+    if (act === 'cancel_session') {
+      try { await altgram.answerCallbackQuery({ callback_query_id: cq.id, text: '❌ Отменено' }) } catch {}
+      const user = await upsertUser(cq.from)
+      await db.session.deleteMany({ where: { tgId: user.tgId } })
+      await send(cq.from.id, '❌ Создание розыгрыша отменено. Начни заново: /newgiveaway')
       return
     }
 
@@ -822,6 +943,17 @@ async function handleCallbackQuery(cq: TgCallbackQuery) {
       }
       try { await altgram.answerCallbackQuery({ callback_query_id: cq.id, text: `✅ ${hours}ч` }) } catch {}
       await handleDurationButton(cq, hours)
+      return
+    }
+
+    if (act === 'maxpart') {
+      const n = parseInt(arg)
+      if (isNaN(n) || n < 1) {
+        try { await altgram.answerCallbackQuery({ callback_query_id: cq.id, text: '❌ Ошибка' }) } catch {}
+        return
+      }
+      try { await altgram.answerCallbackQuery({ callback_query_id: cq.id, text: `✅ ${n} участников` }) } catch {}
+      await handleMaxParticipantsButton(cq, n)
       return
     }
 
@@ -958,6 +1090,66 @@ async function handleJoinGiveaway(cq: TgCallbackQuery, giveawayId: string) {
     return
   }
 
+  // Проверяем подписки на обязательные каналы
+  let requiredChannels: string[] = []
+  if (giveaway.requiredChannels) {
+    try {
+      requiredChannels = JSON.parse(giveaway.requiredChannels)
+    } catch {}
+  }
+  if (requiredChannels.length > 0) {
+    const notSubscribed: string[] = []
+    for (const ch of requiredChannels) {
+      try {
+        const memberRes = await altgram.getChatMember({
+          chat_id: `@${ch}`,
+          user_id: from.id,
+        })
+        console.log(`[join] check sub @${ch} for user ${from.id}:`, memberRes.ok ? memberRes.result?.status : 'failed')
+        if (!memberRes.ok || !memberRes.result) {
+          // Не удалось проверить — считаем что не подписан
+          notSubscribed.push(ch)
+        } else {
+          const status = memberRes.result.status
+          if (status !== 'member' && status !== 'administrator' && status !== 'creator') {
+            notSubscribed.push(ch)
+          }
+        }
+      } catch (e) {
+        console.error(`[join] getChatMember error for @${ch}:`, e)
+        notSubscribed.push(ch)
+      }
+    }
+
+    if (notSubscribed.length > 0) {
+      const channelList = notSubscribed.map(c => `@${c}`).join(', ')
+      try {
+        await altgram.answerCallbackQuery({
+          callback_query_id: cq.id,
+          text: `❌ Подпишись на: ${channelList}`,
+          show_alert: true,
+        })
+      } catch {}
+      // Отправим подробное сообщение в ЛС
+      try {
+        const subButtons = notSubscribed.map(c => [{ text: `📢 @${c}`, url: `https://t.me/${c}` }])
+        await send(
+          from.id,
+          [
+            `❌ **Подпишись чтобы участвовать**`,
+            ``,
+            `Для участия в розыгрыше **${giveaway.title}** нужно подписаться:`,
+            ...notSubscribed.map(c => `• @${c}`),
+            ``,
+            `После подписки нажми «Участвовать» ещё раз.`,
+          ].join('\n'),
+          { inline_keyboard: subButtons }
+        )
+      } catch {}
+      return
+    }
+  }
+
   // Создаём участника
   await db.participant.create({
     data: {
@@ -975,6 +1167,22 @@ async function handleJoinGiveaway(cq: TgCallbackQuery, giveawayId: string) {
 
   // Обновляем пост в канале
   await updateGiveawayPost(giveaway.id)
+
+  // Если завершение по кол-ву участников — проверим
+  if (giveaway.endType === 'participants' && giveaway.maxParticipants) {
+    const updated = await db.giveaway.findUnique({ where: { id: giveaway.id } })
+    if (updated && updated.totalTickets >= giveaway.maxParticipants) {
+      // Завершаем розыгрыш
+      try {
+        await altgram.answerCallbackQuery({
+          callback_query_id: cq.id,
+          text: `🎉 Ты последний участник! Завершаю розыгрыш...`,
+        })
+      } catch {}
+      await finalizeGiveaway(giveaway.id)
+      return
+    }
+  }
 
   try {
     await altgram.answerCallbackQuery({
@@ -1118,6 +1326,36 @@ async function setEndType(cq: TgCallbackQuery, endType: string) {
       kb
     )
     return
+  } else if (endType === 'participants') {
+    // По кол-ву участников — ждём ввод числа
+    data.endType = 'participants'
+    await db.session.update({
+      where: { tgId: user.tgId },
+      data: { step: 'step5_endtype_participants', data: JSON.stringify(data) },
+    })
+    const kb: TgInlineKeyboardMarkup = {
+      inline_keyboard: [
+        [
+          { text: '50', callback_data: 'maxpart:50' },
+          { text: '100', callback_data: 'maxpart:100' },
+          { text: '500', callback_data: 'maxpart:500' },
+          { text: '1000', callback_data: 'maxpart:1000' },
+        ],
+        [{ text: '❌ Отменить', callback_data: 'cancel_session' }],
+      ],
+    }
+    await send(
+      cq.from.id,
+      [
+        `✅ Завершение: по кол-ву участников`,
+        ``,
+        `После скольки участников завершить?`,
+        ``,
+        `Или отправь своё число:`,
+      ].join('\n'),
+      kb
+    )
+    return
   } else {
     // time
     data.endType = 'time'
@@ -1136,6 +1374,7 @@ async function setEndType(cq: TgCallbackQuery, endType: string) {
           { text: '3 дня', callback_data: 'dur:72' },
           { text: '7 дней', callback_data: 'dur:168' },
         ],
+        [{ text: '❌ Отменить', callback_data: 'cancel_session' }],
       ],
     }
     await send(
@@ -1150,6 +1389,66 @@ async function setEndType(cq: TgCallbackQuery, endType: string) {
       kb
     )
   }
+}
+
+// Обработка выбора "добавить подписки" (subs:yes / subs:no)
+async function handleSubsChoice(cq: TgCallbackQuery, addSubs: boolean) {
+  const user = await upsertUser(cq.from)
+  const session = await db.session.findUnique({ where: { tgId: user.tgId } })
+  if (!session || session.step !== 'step3_subs') {
+    await send(cq.from.id, '⚠️ Сессия устарела. Начни заново: /newgiveaway')
+    return
+  }
+  const data = JSON.parse(session.data)
+
+  if (!addSubs) {
+    // Без подписок — сразу к шагу 4
+    data.requiredChannels = []
+    await db.session.update({
+      where: { tgId: user.tgId },
+      data: { step: 'step4_winners', data: JSON.stringify(data) },
+    })
+    await send(
+      cq.from.id,
+      [
+        `✅ Без обязательных подписок`,
+        ``,
+        `Шаг 4/7: Сколько победителей?`,
+      ].join('\n'),
+      {
+        inline_keyboard: [
+          [
+            { text: '1', callback_data: 'winners:1' },
+            { text: '3', callback_data: 'winners:3' },
+            { text: '5', callback_data: 'winners:5' },
+            { text: '10', callback_data: 'winners:10' },
+          ],
+          [{ text: '❌ Отменить', callback_data: 'cancel_session' }],
+        ],
+      }
+    )
+    return
+  }
+
+  // Да — ждём ввод @username каналов
+  await db.session.update({
+    where: { tgId: user.tgId },
+    data: { step: 'step3_subs_input', data: JSON.stringify(data) },
+  })
+  await send(
+    cq.from.id,
+    [
+      `✅ Добавляем подписки`,
+      ``,
+      `Напиши @username каналов через пробел:`,
+      `Например: \`@channel1 @channel2 @channel3\``,
+      ``,
+      `⚠️ Бот должен быть админом каждого канала для проверки подписки.`,
+    ].join('\n'),
+    {
+      inline_keyboard: [[{ text: '❌ Отменить', callback_data: 'cancel_session' }]],
+    }
+  )
 }
 
 // Helper: handle duration buttons (dur:1, dur:6, ...)
@@ -1167,6 +1466,9 @@ async function handleDurationButton(cq: TgCallbackQuery, hours: number) {
     where: { tgId: user.tgId },
     data: { step: 'step6_media', data: JSON.stringify(data) },
   })
+  const kb: TgInlineKeyboardMarkup = {
+    inline_keyboard: [[{ text: '⏭️ Без медиа', callback_data: 'skip' }]],
+  }
   await send(
     cq.from.id,
     [
@@ -1174,8 +1476,40 @@ async function handleDurationButton(cq: TgCallbackQuery, hours: number) {
       ``,
       `Шаг 6/7: Медиа (опционально)`,
       ``,
-      `Пришли фото или видео для поста, или отправь /skip для пропуска.`,
-    ].join('\n')
+      `Пришли фото или видео для поста, или нажми «⏭️ Без медиа».`,
+    ].join('\n'),
+    kb
+  )
+}
+
+// Обработка кнопок maxpart:N (50, 100, 500, 1000)
+async function handleMaxParticipantsButton(cq: TgCallbackQuery, maxParticipants: number) {
+  const user = await upsertUser(cq.from)
+  const session = await db.session.findUnique({ where: { tgId: user.tgId } })
+  if (!session || session.step !== 'step5_endtype_participants') {
+    return
+  }
+  const data = JSON.parse(session.data)
+  data.endType = 'participants'
+  data.maxParticipants = maxParticipants
+  data.endsAt = null
+  await db.session.update({
+    where: { tgId: user.tgId },
+    data: { step: 'step6_media', data: JSON.stringify(data) },
+  })
+  const kb: TgInlineKeyboardMarkup = {
+    inline_keyboard: [[{ text: '⏭️ Без медиа', callback_data: 'skip' }]],
+  }
+  await send(
+    cq.from.id,
+    [
+      `✅ Завершится после ${maxParticipants} участников`,
+      ``,
+      `Шаг 6/7: Медиа (опционально)`,
+      ``,
+      `Пришли фото или видео для поста, или нажми «⏭️ Без медиа».`,
+    ].join('\n'),
+    kb
   )
 }
 
