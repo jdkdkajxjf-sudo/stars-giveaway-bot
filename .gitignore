@@ -1,0 +1,7 @@
+node_modules/
+*.log
+.offset.json
+.env
+.env.backup
+.restart_count
+dist/
